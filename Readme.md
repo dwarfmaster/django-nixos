@@ -26,15 +26,12 @@ An exemplary django project with some example NixOS/NixOps configs can be found 
   pkgs ? import ./nixpkgs-src.nix { config = {}; },  # nixpkgs
   python ? import ./python.nix { inherit pkgs; },  # python + modules
   manage-py ? "${src}/manage.py",  # path to manage.py inside src
-  static-files ? (import ./static-files.nix { # derivation of static files
-    inherit pkgs python src settings name manage-py;
-  }),
   wsgi ? "${name}.wsgi",  # django wsgi module like `myproject.wsgi`
   processes ? 5,  # number of proccesses for gunicorn server
   threads ? 5,  # number of threads for gunicorn server
   db-name ? name,  # database name
   user ? "django",  # system user for django
-  port ? 80,  # port to bind the http server
+  port ? 8000,  # port to bind the http server
   allowed-hosts ? "*",  # string of comma separated hosts
   ...
 }:
