@@ -5,6 +5,7 @@
   pkgs,  # nixpkgs
 
   # OPTIONAL
+  fqdn ? "localhost",
   settings, # django settings module like `myproject.settings`
   python ? import ./python.nix { inherit pkgs; },  # python + modules
   manage-py ? "${src}/manage.py",  # path to manage.py inside src
@@ -14,7 +15,7 @@
   db-name ? name,  # database name
   user ? "django",  # system user for django
   port ? 8000,  # port to bind the http server
-  allowed-hosts ? "*",  # string of comma separated hosts
+  allowed-hosts ? fqdn,  # string of comma separated hosts
   ...
 }:
 with pkgs;
@@ -126,7 +127,7 @@ let
 
     services.nginx = {
       enable = true;
-      virtualHosts."localhost" = {
+      virtualHosts.${fqdn} = {
         locations."/".proxyPass = "http://localhost:" + toString(port) + "/";
         locations."/static/".alias = "${static-files}/";
       };
