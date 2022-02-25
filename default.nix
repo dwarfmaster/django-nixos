@@ -1,154 +1,228 @@
-{ # MANDATORY
-  name,  # create a name for the project
-  keys-file,  # path to a file containing secrets
-  src,  # derivation of django source code
-  pkgs,  # nixpkgs
+{ config, lib, pkgs, ... }:
 
-  # OPTIONAL
-  fqdn ? "localhost",
-  settings, # django settings module like `myproject.settings`
-  python ? import ./python.nix { inherit pkgs; },  # python + modules
-  manage-py ? "${src}/manage.py",  # path to manage.py inside src
-  wsgi ? "${name}.wsgi",  # django wsgi module like `myproject.wsgi`
-  processes ? 5,  # number of proccesses for gunicorn server
-  threads ? 5,  # number of threads for gunicorn server
-  db-name ? name,  # database name
-  user ? "django",  # system user for django
-  port ? 8000,  # port to bind the http server
-  allowed-hosts ? fqdn,  # string of comma separated hosts
-  ...
-}:
-with pkgs;
 let
-  static-files = pkgs.runCommand
-    "${name}-static"
+  cfg = config.services.django;
+  python = import ./python.nix { inherit pkgs; };
+
+  static-files = cfg: pkgs.runCommand
+    "${cfg.name}-static"
     {}
     ''mkdir $out
       export SECRET_KEY="key" # collectstatic doesn't care about the key (with our whitenoise settings)
       export STATIC_ROOT=$out
-      ${python}/bin/python ${manage-py} collectstatic --settings ${settings}
+      ${python}/bin/python ${cfg.manage} collectstatic --settings ${cfg.settings}
     '';
-  load-django-env = ''
-    export DJANGO_SETTINGS_MODULE=${settings}
-    export ALLOWED_HOSTS=${allowed-hosts}
-    export DB_NAME=${db-name}
-    export STATIC_ROOT=${static-files}
+  load-django-env = cfg: ''
+    export DJANGO_SETTINGS_MODULE=${cfg.settings}
+    export ALLOWED_HOSTS=${builtins.concatStringsSep "," cfg.allowedHosts}
+    export DB_NAME=${cfg.database}
+    export STATIC_ROOT=${static-files cfg}
   '';
-  load-django-keys = ''
-    source /run/${user}/django-keys
+  load-django-keys = cfg: ''
+    source /run/${cfg.user}/django-keys
   '';
-  manage-script-content = ''
-    ${load-django-env}
-    ${load-django-keys}
-    ${python}/bin/python ${manage-py} $@
+  manage-script-content = cfg: ''
+    ${load-django-env cfg}
+    ${load-django-keys cfg}
+    ${python}/bin/python ${cfg.manage} $@
   '';
-  manage = 
-    runCommand 
-      "manage-${name}-script"
+  manage = cfg:
+    pkgs.runCommand 
+      "manage-${cfg.name}-script"
       {}
       ''mkdir -p $out/bin
         bin=$out/bin/manage
-        echo -e '${manage-script-content}' > $bin
+        echo -e '${manage-script-content cfg}' > $bin
         chmod +x $bin
       '';
-  manage-via-sudo = 
-    runCommand 
-      "manage-${name}"
+  manage-via-sudo = cfg:
+    pkgs.runCommand
+      "manage-${cfg.name}"
       {}
       ''mkdir -p $out/bin
-        bin=$out/bin/manage-${name}
-        echo -e 'sudo -u ${user} bash ${manage}/bin/manage $@' > $bin
+        bin=$out/bin/manage-${cfg.name}
+        echo -e 'sudo -u ${cfg.user} bash ${manage cfg}/bin/manage $@' > $bin
         chmod +x $bin
       '';
-  system-config = {
-    # manage.py of the project can be called via manage-`projectname`
-    environment.systemPackages = [ manage-via-sudo ];
 
-    # create django user
-    users.users.${user} = {
-      isSystemUser = true;
-      group = user;
-    };
-    users.groups.${user} = {};
+  setup-keys = cfg: ''
+    mkdir -p /run/${cfg.user}
+    touch /run/${cfg.user}/django-keys
+    chmod 400 /run/${cfg.user}/django-keys
+    chown -R ${cfg.user} /run/${cfg.user}
+    cat ${cfg.keysFile} > /run/${cfg.user}/django-keys
+  '';
 
-    # The user of django.service might not have permission to access the keys-file.
-    # Therefore we copy the keys-file to a place where django has access
-    systemd.services.django-keys = {
-      description = "Ensure keys are accessible for django";
-      wantedBy = [ "django.service" ];
-      requiredBy = [ "django.service" ];
-      before = [ "django.service" ];
-      serviceConfig = { Type = "oneshot"; };
-      script = ''
-        mkdir -p /run/${user}
-        touch /run/${user}/django-keys
-        chmod 400 /run/${user}/django-keys
-        chown -R ${user} /run/${user}
-        cat ${keys-file} > /run/${user}/django-keys
-      '';
-    };
-
-    # We name the service like the specified user.
-    # This allows us to have multiple django projects running in parallel
-    systemd.services.${user} = {
-      description = "${name} django service";
-      wantedBy = [ "multi-user.target" ];
-      wants = [ "postgresql.service" ];
-      after = [ "network.target" "postgresql.service" ];
-      #path = [ python src ];
-      serviceConfig = {
-        LimitNOFILE = "99999";
-        LimitNPROC = "99999";
-        User = user;
-        AmbientCapabilities = "CAP_NET_BIND_SERVICE";  # to be able to bind to low number ports
+  inherit (lib) types;
+  serverType = lib.types.submodule
+    ({ name, config, ...}: {
+      options = {
+        name = lib.mkOption {
+          description = "The name of the django service";
+          type = types.nonEmptyStr;
+          default = name;
+        };
+        user = lib.mkOption {
+          description = "The user to run the django service as";
+          type = types.nonEmptyStr;
+          default = config.name;
+        };
+        keysFile = lib.mkOption {
+          description = "Path to a file containing secrets";
+          type = types.either types.nonEmptyStr types.path;
+        };
+        root = lib.mkOption {
+          description = "DJango source code root";
+          type = types.path;
+        };
+        hostName = lib.mkOption {
+          description = "The hostname the server is reachable on";
+          type = types.str;
+          default = "localhost";
+        };
+        setupNginx = lib.mkOption {
+          description = "Whether to setup NGINX";
+          type = types.bool;
+          default = false;
+        };
+        port = lib.mkOption {
+          description = "Local port to bind";
+          type = types.port;
+          default = 8000;
+        };
+        settings = lib.mkOption {
+          description = "Django settings module";
+          type = types.str;
+        };
+        manage = lib.mkOption {
+          description = "Path to the manage.py of the project";
+          type = types.str;
+          default = "${config.root}/manage.py";
+        };
+        wsgi = lib.mkOption {
+          description = "Django wsgi module";
+          type = types.str;
+          default = "${config.name}.wsgi";
+        };
+        processes = lib.mkOption {
+          description = "Number of processes for the gunicorn server";
+          type = types.int;
+          default = 5;
+        };
+        threads = lib.mkOption {
+          description = "Number of threads for gunicorn server";
+          type = types.int;
+          default = 5;
+        };
+        database = lib.mkOption {
+          description = "Name of the database";
+          type = types.nonEmptyStr;
+          default = config.name;
+        };
+        allowedHosts = lib.mkOption {
+          description = "List of allowed hosts";
+          type = types.listOf types.str;
+          default = [ config.hostName ];
+        };
       };
-      script = ''
-        ${load-django-env}
-        ${load-django-keys}
-        ${python}/bin/python ${manage-py} migrate
-        ${python}/bin/gunicorn ${wsgi} \
-            --pythonpath ${src} \
-            -b 0.0.0.0:${toString port} \
-            --workers=${toString processes} \
-            --threads=${toString threads}
-      '';
+    });
+in
+{
+  options.services.django = {
+    enable = lib.mkEnableOption "Management of django services";
+    servers = lib.mkOption {
+      description = "Django services to be managed by nixos.";
+      type = types.attrsOf serverType;
+      default = { };
+      # TODO example
     };
+  };
+
+  config = lib.mkIf cfg.enable {
+    # manage.py of each project can be called via manage-django-`projectname`
+    environment.systemPackages =
+      lib.mapAttrsToList (_: cfg: manage-via-sudo cfg) cfg.servers;
+
+    # create users
+    users.users =
+      lib.mapAttrs'
+        (_: cfg: lib.nameValuePair cfg.user { isSystemUser = true; group = cfg.user; })
+        cfg.servers;
+    users.groups =
+      lib.mapAttrs'
+        (_: cfg: lib.nameValuePair cfg.user { })
+        cfg.servers;
+
+    systemd.services =
+      (lib.mapAttrs'
+        (_: cfg: lib.nameValuePair "django-${cfg.name}" {
+          description = "${cfg.name} django service";
+          wantedBy = [ "multi-user.target" ];
+          wants = [ "postgresql.service" ];
+          after = [ "network.target" "postgresql.service" ];
+          serviceConfig = {
+            LimitNOFILE = "99999";
+            LimitNPROC = "99999";
+            User = cfg.user;
+          }
+          # Set capabilities if the port is under 1024
+          // (if cfg.port <= 1024
+              then { AmbientCapabilities = "CAP_NET_BIND_SERVICE"; }
+              else {});
+          script = ''
+            ${load-django-env cfg}
+            ${load-django-keys cfg}
+            ${python}/bin/python ${cfg.manage} migrate
+            ${python}/bin/gunicorn ${cfg.wsgi} \
+                --pythonpath ${cfg.root} \
+                -b 0.0.0.0:${toString cfg.port} \
+                --workers=${toString cfg.processes} \
+                --threads=${toString cfg.threads}
+          '';
+        }) cfg.servers) // {
+          # The user of each server might not have permission to access the
+          # keys-file. Therefore we copy the keys-file to a place where the
+          # users has access
+          setup-django-keys = let
+            django-services =
+              lib.mapAttrsToList
+                (_: cfg: "django-${cfg.name}.service")
+                cfg.servers;
+          in {
+            description = "Ensure keys are accessible for django";
+            wantedBy = django-services;
+            requiredBy = django-services;
+            before = django-services;
+            serviceConfig = { Type = "oneshot"; };
+            # TODO use systemd tmpfiles
+            script = lib.concatMapStrings (setup-keys) (builtins.attrValues cfg.servers);
+          };
+        };
 
     services.postgresql = {
       enable = true;
-      ensureDatabases = [ db-name ];
-      ensureUsers = [{
-        name = "${user}";
-        ensurePermissions = {
-          "DATABASE ${db-name}" = "ALL PRIVILEGES";
-        };
-      }];
+      ensureDatabases = lib.mapAttrsToList (_: cfg: cfg.database) cfg.servers;
+      ensureUsers = lib.mapAttrsToList
+        (_: cfg: {
+          name = cfg.user;
+          ensurePermissions = {
+            "DATABASE ${cfg.database}" = "ALL PRIVILEGES";
+          };
+        })
+        cfg.servers;
     };
 
     services.nginx = {
-      enable = true;
-      virtualHosts.${fqdn} = {
-        locations."/".proxyPass = "http://localhost:" + toString(port) + "/";
-        locations."/static/".alias = "${static-files}/";
-      };
+      enable = builtins.foldl' (b1: b2: b1 || b2) false
+        (lib.mapAttrsToList (_: cfg: cfg.setupNginx) cfg.servers);
+      virtualHosts = lib.mapAttrs'
+        (_: cfg: if cfg.setupNginx
+                 then lib.nameValuePair cfg.hostName {
+                   locations."/".proxyPass = "http://localhost:${cfg.port}/";
+                   locations."/static/".alias = "${static-files cfg}/";
+                 }
+                 else lib.nameValuePair "" null)
+        cfg.servers;
     };
   };
-  nixosModule = { config, lib, ... }:
-  let
-    cfg = config.services.${name};
-  in {
-    options.services.${name} = { enable = lib.mkEnableOption name; };
-    config = lib.mkIf cfg.enable system-config;
-  };
-in 
-{
-  inherit 
-    load-django-env
-    load-django-keys
-    manage
-    manage-via-sudo
-    nixosModule
-    static-files
-    system-config
-  ;
 }
