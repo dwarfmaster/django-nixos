@@ -86,7 +86,7 @@ let
           default = false;
         };
         port = lib.mkOption {
-          description = "Local port to bind";
+          description = "GUnicorn port to bind";
           type = types.port;
           default = 8000;
         };
@@ -123,6 +123,13 @@ let
           description = "List of allowed hosts";
           type = types.listOf types.str;
           default = [ config.hostName ];
+        };
+      };
+
+      config = {
+        nginxConfig = {
+          locations."/".proxyPass = "http://localhost:${config.port}/";
+          locations."/static/".alias = "${static-files config}/";
         };
       };
     });
@@ -195,7 +202,7 @@ in
             before = django-services;
             serviceConfig = { Type = "oneshot"; };
             # TODO use systemd tmpfiles
-            script = lib.concatMapStrings (setup-keys) (builtins.attrValues cfg.servers);
+            script = lib.concatMapStrings setup-keys (builtins.attrValues cfg.servers);
           };
         };
 
@@ -213,14 +220,9 @@ in
     };
 
     services.nginx = {
-      enable = builtins.foldl' (b1: b2: b1 || b2) false
-        (lib.mapAttrsToList (_: cfg: cfg.setupNginx) cfg.servers);
       virtualHosts = lib.mapAttrs'
         (_: cfg: if cfg.setupNginx
-                 then lib.nameValuePair cfg.hostName {
-                   locations."/".proxyPass = "http://localhost:${cfg.port}/";
-                   locations."/static/".alias = "${static-files cfg}/";
-                 }
+                 then lib.nameValuePair cfg.hostName cfg.nginxConfig
                  else lib.nameValuePair "" null)
         cfg.servers;
     };
