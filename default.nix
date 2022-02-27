@@ -45,14 +45,6 @@ let
         chmod +x $bin
       '';
 
-  setup-keys = cfg: ''
-    mkdir -p /run/${cfg.user}
-    touch /run/${cfg.user}/django-keys
-    chmod 400 /run/${cfg.user}/django-keys
-    chown -R ${cfg.user} /run/${cfg.user}
-    cat ${cfg.keysFile} > /run/${cfg.user}/django-keys
-  '';
-
   inherit (lib) types;
   serverType = lib.types.submodule
     ({ name, config, ...}: {
@@ -165,6 +157,17 @@ in
         (_: cfg: lib.nameValuePair cfg.user { })
         cfg.servers;
 
+    # The user of each server might not have permission to access the keys-file.
+    # Therefore we copy the keys-file to a place where the users has access
+    systemd.tmpfiles.rules = lib.flatten (lib.mapAttrsToList
+      (_: cfg: [
+        "d /run/${cfg.user} 1400 ${cfg.user} ${cfg.user} - -"
+        "e /run/${cfg.user} 1400 ${cfg.user} ${cfg.user} - -"
+        "C /run/${cfg.user}/django-keys 0400 ${cfg.user} ${cfg.user} - ${cfg.keysFile}"
+      ])
+      cfg.servers
+    );
+
     systemd.services =
       (lib.mapAttrs'
         (_: cfg: lib.nameValuePair "django-${cfg.name}" {
@@ -191,25 +194,7 @@ in
                 --workers=${toString cfg.processes} \
                 --threads=${toString cfg.threads}
           '';
-        }) cfg.servers) // {
-          # The user of each server might not have permission to access the
-          # keys-file. Therefore we copy the keys-file to a place where the
-          # users has access
-          setup-django-keys = let
-            django-services =
-              lib.mapAttrsToList
-                (_: cfg: "django-${cfg.name}.service")
-                cfg.servers;
-          in {
-            description = "Ensure keys are accessible for django";
-            wantedBy = django-services;
-            requiredBy = django-services;
-            before = django-services;
-            serviceConfig = { Type = "oneshot"; };
-            # TODO use systemd tmpfiles
-            script = lib.concatMapStrings setup-keys (builtins.attrValues cfg.servers);
-          };
-        };
+        }) cfg.servers);
 
     services.postgresql = {
       enable = true;
