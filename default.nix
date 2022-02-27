@@ -124,11 +124,16 @@ let
           type = types.listOf types.str;
           default = [ config.hostName ];
         };
+        nginxConfig = lib.mkOption {
+          description = "NGinx configuration for this server";
+          type = types.attrs;
+          readOnly = true;
+        };
       };
 
       config = {
         nginxConfig = {
-          locations."/".proxyPass = "http://localhost:${config.port}/";
+          locations."/".proxyPass = "http://localhost:${toString config.port}/";
           locations."/static/".alias = "${static-files config}/";
         };
       };
