@@ -1,43 +1,72 @@
 # NixOS-based Django deployment
-!! WARNING !! This project has not been updated for a while. You can still use this as a template, but make sure to update the nixpkgs version in `nixpkgs-src.nix`
 
-This Project aims to provide a production grade NixOS configuration for Django projects. By taking your source code and some parameters as input it will return a nixos configuration which serves your Django project.
+Forked from https://github.com/DavHau/django-nixos
 
-An exemplary django project with some example NixOS/NixOps configs can be found under `./examples`
+This Project aims to provide a production grade NixOS configuration for Django
+projects. By taking your source code and some parameters as input it will return
+a nixos configuration which serves your Django project.
 
 ## What you will get
- - A PostgreSQL DB with access configured for django
- - A systemd service which serves the project via gunicorn
- - A defined way of passing secrets to Django without leaking them into /nix/store
- - Your static files as a separated build artifact (by default served via whitenoise)
- - Ability to configure some common options like (allowed-hosts, port, processes, threads) through your nix config.
- - Having your `manage.py` globally callable via `manage-projectname` (only via root/sudo)
+- A PostgreSQL DB with access configured for django
+- A systemd service which serves the project via gunicorn
+- A defined way of passing secrets to Django without leaking them into
+  /nix/store
+- Your static files as a separated build artifact (by default served via
+  whitenoise)
+- Ability to configure some common options like (allowed-hosts, port, processes,
+  threads) through your nix config.
+- Having your `manage.py` globally callable via `manage-projectname` (only via
+  root/sudo)
 
 
-## Parameters
+## Usage
+
+`default.nix` is a NixOS module that allows managing django applications,
+serving them through `gunicorn`. The flake simply exports that module as django.
+
+Once imported, the management of django application is done the following way:
 ```nix
-{ # MANDATORY
-  name,  # create a name for the project
-  keys-file,  # path to a file containing secrets
-  src,  # derivation of django source code
-
-  # OPTIONAL
-  settings, # django settings module like `myproject.settings`
-  pkgs ? import ./nixpkgs-src.nix { config = {}; },  # nixpkgs
-  python ? import ./python.nix { inherit pkgs; },  # python + modules
-  manage-py ? "${src}/manage.py",  # path to manage.py inside src
-  wsgi ? "${name}.wsgi",  # django wsgi module like `myproject.wsgi`
-  processes ? 5,  # number of proccesses for gunicorn server
-  threads ? 5,  # number of threads for gunicorn server
-  db-name ? name,  # database name
-  user ? "django",  # system user for django
-  port ? 8000,  # port to bind the http server
-  allowed-hosts ? "*",  # string of comma separated hosts
-  ...
-}:
+{
+  django.enable = true;
+  django.servers = {
+    project1 = { ... };
+    project2 = { ... };
+  }
+}
 ```
 
+Each server must at least define:
+- `keysFile`: path to a file containing the secrets needed for the applications.
+- `root`: path to the source of the application.
+- `settings`: name of the django module with the settings.
 
+Some additional interesting options can be set:
+- `hostName`: the hostname the server is reachable on. Default to `localhost`.
+- `allowedHosts`: a list of hosts allowed to connect. If it only contains
+  `localhost`, the application is launched with a network trafic jail that
+  prevents it to communicate outside. To change that, set
+  `systemd.services.django-${projectname}.serviceConfig.IPAddressDeny` to `""`.
+- `port`: the local port to bind
+- `setupNginx`: automatically setup Nginx for `hostName`. Default to `false`.
+
+The list of all options can be read directly from `default.nix`.
+
+## Security
+
+Each server is launch in its own systemd service named `django-${projectname}`.
+For security reason, by default the service is almost completely cut off from
+the rest of the system, and launched with very few permissions. From some
+applications that may be a problem, so every security setting in
+`systemd.services.django-${projectname}.serviceConfig` is set using
+`lib.mkDefault`.
+
+TODO improved settings:
+- Support using unix sockets and remove `AF_INET` and `AF_INET6` from the
+  address families.
+- Consider setting up `PrivateNetwork=true` with a bridge to the main network
+  for additional isolation, and maybe no bridge if it only communicates through
+  unix sockets. Maybe make that opt-in with an option.
+- Fix `gunicorn` to be able to add `~@privileged` to the system call filter.
 
 ## Prerequisites
 Django settings must be configured to:
@@ -81,7 +110,10 @@ To pass secrets to django securely:
     This file will not be managed by nix.
     If you are deploying to a remote host, make sure this file is available. An example on how to do this with NixOps can be found under `./examples/nixops`
 
-A systemd service running as root will later pick up that file and copy it to a destination under `/run/` where only the django system user can read it. Make sure by yourself to protect the source file you uploaded to the remote host with proper permissions or use the provided NixOps example.
+A systemd service running as root will later pick up that file and copy it to a
+destination under `/run/` where only the django system user can read it. Make
+sure by yourself to protect the source file you uploaded to the remote host
+with proper permissions or use the provided NixOps example.
 
 ## Examples
 See `Readme.md` inside `./examples`
