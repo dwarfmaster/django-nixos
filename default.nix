@@ -114,7 +114,7 @@ let
         allowedHosts = lib.mkOption {
           description = "List of allowed hosts";
           type = types.listOf types.str;
-          default = [ config.hostName ];
+          default = [ "localhost" ];
         };
         nginxConfig = lib.mkOption {
           description = "NGinx configuration for this server";
@@ -194,44 +194,44 @@ in
             User = cfg.user;
             Group = cfg.user;
             # Security
-            ProtectProc = "invisible";
-            ProcSubset = "pid";
-            NoNewPrivileges = true;
-            AmbientCapabilities = capabilities;
-            CapabilityBoundingSet = capabilities;
-            UMask = "066";
+            ProtectProc = lib.mkDefault "invisible";
+            ProcSubset = lib.mkDefault "pid";
+            NoNewPrivileges = lib.mkDefault true;
+            AmbientCapabilities = lib.mkDefault capabilities;
+            CapabilityBoundingSet = lib.mkDefault capabilities;
+            UMask = lib.mkDefault "066";
             # Sandboxing
-            ProtectSystem = "strict";
-            ProtectHome = true;
-            PrivateTmp = true;
-            PrivateDevices = true;
-            PrivateUsers = true;
-            DevicePolicy = "closed";
-            ProtectHostname = true;
-            ProtectClock = true;
-            ProtectKernelTunables = true;
-            ProtectKernelModules = true;
-            ProtectKernelLogs = true;
-            ProtectControlGroups = true;
-            RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
-            RestrictNamespaces = true;
-            LockPersonality = true;
-            MemoryDenyWriteExecute = true;
-            RestrictRealtime = true;
-            RestrictSUIDSGID = true;
-            RemoveIPC = true;
-            PrivateMounts = true;
-            ReadWritePaths = [ "/run/${cfg.user}" ];
-            ReadOnlyPaths = [ "${cfg.root}" ];
+            ProtectSystem = lib.mkDefault "strict";
+            ProtectHome = lib.mkDefault true;
+            PrivateTmp = lib.mkDefault true;
+            PrivateDevices = lib.mkDefault true;
+            PrivateUsers = lib.mkDefault true;
+            DevicePolicy = lib.mkDefault "closed";
+            ProtectHostname = lib.mkDefault true;
+            ProtectClock = lib.mkDefault true;
+            ProtectKernelTunables = lib.mkDefault true;
+            ProtectKernelModules = lib.mkDefault true;
+            ProtectKernelLogs = lib.mkDefault true;
+            ProtectControlGroups = lib.mkDefault true;
+            RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+            RestrictNamespaces = lib.mkDefault true;
+            LockPersonality = lib.mkDefault true;
+            MemoryDenyWriteExecute = lib.mkDefault true;
+            RestrictRealtime = lib.mkDefault true;
+            RestrictSUIDSGID = lib.mkDefault true;
+            RemoveIPC = lib.mkDefault true;
+            PrivateMounts = lib.mkDefault true;
+            ReadWritePaths = lib.mkDefault [ "/run/${cfg.user}" ];
+            ReadOnlyPaths = lib.mkDefault [ "${cfg.root}" ];
             # System Call architecture
-            SystemCallArchitectures = "native";
-            SystemCallFilter = [ "@system-service" ];
-            SystemCallErrorNumber = "EPERM";
-          } // (if (cfg.hostName == "localhost" && lib.all (x: x == "localhost") cfg.allowedHosts)
+            SystemCallArchitectures = lib.mkDefault "native";
+            SystemCallFilter = lib.mkDefault [ "@system-service" "~@resources" ];
+            SystemCallErrorNumber = lib.mkDefault "EPERM";
+          } // (if (lib.all (x: x == "localhost") cfg.allowedHosts)
                 then {
                   # Allow only local connection if it is to only bind localhost
-                  IPAddressAllow = "localhost";
-                  IPAddressDeny = "any";
+                  IPAddressAllow = lib.mkDefault "localhost";
+                  IPAddressDeny = lib.mkDefault "any";
                 } else {});
         }) django.servers);
 
