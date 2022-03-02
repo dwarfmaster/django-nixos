@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.services.django;
+  django = config.services.django;
   python = import ./python.nix { inherit pkgs; };
 
   static-files = cfg: pkgs.runCommand
@@ -44,14 +44,6 @@ let
         echo -e 'sudo -u ${cfg.user} bash ${manage cfg}/bin/manage $@' > $bin
         chmod +x $bin
       '';
-
-  setup-keys = cfg: ''
-    mkdir -p /run/${cfg.user}
-    touch /run/${cfg.user}/django-keys
-    chmod 400 /run/${cfg.user}/django-keys
-    chown -R ${cfg.user} /run/${cfg.user}
-    cat ${cfg.keysFile} > /run/${cfg.user}/django-keys
-  '';
 
   inherit (lib) types;
   serverType = lib.types.submodule
@@ -122,7 +114,7 @@ let
         allowedHosts = lib.mkOption {
           description = "List of allowed hosts";
           type = types.listOf types.str;
-          default = [ config.hostName ];
+          default = [ "localhost" ];
         };
         nginxConfig = lib.mkOption {
           description = "NGinx configuration for this server";
@@ -150,37 +142,41 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf django.enable {
     # manage.py of each project can be called via manage-django-`projectname`
     environment.systemPackages =
-      lib.mapAttrsToList (_: cfg: manage-via-sudo cfg) cfg.servers;
+      lib.mapAttrsToList (_: cfg: manage-via-sudo cfg) django.servers;
 
     # create users
     users.users =
       lib.mapAttrs'
         (_: cfg: lib.nameValuePair cfg.user { isSystemUser = true; group = cfg.user; })
-        cfg.servers;
+        django.servers;
     users.groups =
       lib.mapAttrs'
         (_: cfg: lib.nameValuePair cfg.user { })
-        cfg.servers;
+        django.servers;
+
+    # The user of each server might not have permission to access the keys-file.
+    # Therefore we copy the keys-file to a place where the users has access
+    systemd.tmpfiles.rules = lib.flatten (lib.mapAttrsToList
+      (_: cfg: [
+        "d /run/${cfg.user} 1500 ${cfg.user} ${cfg.user} - -"
+        "e /run/${cfg.user} 1500 ${cfg.user} ${cfg.user} - -"
+        "C /run/${cfg.user}/django-keys 0400 ${cfg.user} ${cfg.user} - ${cfg.keysFile}"
+      ])
+      django.servers
+    );
 
     systemd.services =
       (lib.mapAttrs'
-        (_: cfg: lib.nameValuePair "django-${cfg.name}" {
+        (_: cfg: let
+          capabilities = if cfg.port <= 1024 then [ "CAP_NET_BIND_SERVICE" ] else [ "" ];
+        in lib.nameValuePair "django-${cfg.name}" {
           description = "${cfg.name} django service";
           wantedBy = [ "multi-user.target" ];
           wants = [ "postgresql.service" ];
           after = [ "network.target" "postgresql.service" ];
-          serviceConfig = {
-            LimitNOFILE = "99999";
-            LimitNPROC = "99999";
-            User = cfg.user;
-          }
-          # Set capabilities if the port is under 1024
-          // (if cfg.port <= 1024
-              then { AmbientCapabilities = "CAP_NET_BIND_SERVICE"; }
-              else {});
           script = ''
             ${load-django-env cfg}
             ${load-django-keys cfg}
@@ -191,29 +187,57 @@ in
                 --workers=${toString cfg.processes} \
                 --threads=${toString cfg.threads}
           '';
-        }) cfg.servers) // {
-          # The user of each server might not have permission to access the
-          # keys-file. Therefore we copy the keys-file to a place where the
-          # users has access
-          setup-django-keys = let
-            django-services =
-              lib.mapAttrsToList
-                (_: cfg: "django-${cfg.name}.service")
-                cfg.servers;
-          in {
-            description = "Ensure keys are accessible for django";
-            wantedBy = django-services;
-            requiredBy = django-services;
-            before = django-services;
-            serviceConfig = { Type = "oneshot"; };
-            # TODO use systemd tmpfiles
-            script = lib.concatMapStrings setup-keys (builtins.attrValues cfg.servers);
-          };
-        };
+          # This is inspired by the NGinx service file
+          serviceConfig = {
+            LimitNOFILE = "99999";
+            LimitNPROC = "99999";
+            User = cfg.user;
+            Group = cfg.user;
+            # Security
+            ProtectProc = lib.mkDefault "invisible";
+            ProcSubset = lib.mkDefault "pid";
+            NoNewPrivileges = lib.mkDefault true;
+            AmbientCapabilities = lib.mkDefault capabilities;
+            CapabilityBoundingSet = lib.mkDefault capabilities;
+            UMask = lib.mkDefault "066";
+            # Sandboxing
+            ProtectSystem = lib.mkDefault "strict";
+            ProtectHome = lib.mkDefault true;
+            PrivateTmp = lib.mkDefault true;
+            PrivateDevices = lib.mkDefault true;
+            PrivateUsers = lib.mkDefault true;
+            DevicePolicy = lib.mkDefault "closed";
+            ProtectHostname = lib.mkDefault true;
+            ProtectClock = lib.mkDefault true;
+            ProtectKernelTunables = lib.mkDefault true;
+            ProtectKernelModules = lib.mkDefault true;
+            ProtectKernelLogs = lib.mkDefault true;
+            ProtectControlGroups = lib.mkDefault true;
+            RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+            RestrictNamespaces = lib.mkDefault true;
+            LockPersonality = lib.mkDefault true;
+            MemoryDenyWriteExecute = lib.mkDefault true;
+            RestrictRealtime = lib.mkDefault true;
+            RestrictSUIDSGID = lib.mkDefault true;
+            RemoveIPC = lib.mkDefault true;
+            PrivateMounts = lib.mkDefault true;
+            ReadWritePaths = lib.mkDefault [ "/run/${cfg.user}" ];
+            ReadOnlyPaths = lib.mkDefault [ "${cfg.root}" ];
+            # System Call architecture
+            SystemCallArchitectures = lib.mkDefault "native";
+            SystemCallFilter = lib.mkDefault [ "@system-service" "~@resources" ];
+            SystemCallErrorNumber = lib.mkDefault "EPERM";
+          } // (if (lib.all (x: x == "localhost") cfg.allowedHosts)
+                then {
+                  # Allow only local connection if it is to only bind localhost
+                  IPAddressAllow = lib.mkDefault "localhost";
+                  IPAddressDeny = lib.mkDefault "any";
+                } else {});
+        }) django.servers);
 
     services.postgresql = {
       enable = true;
-      ensureDatabases = lib.mapAttrsToList (_: cfg: cfg.database) cfg.servers;
+      ensureDatabases = lib.mapAttrsToList (_: cfg: cfg.database) django.servers;
       ensureUsers = lib.mapAttrsToList
         (_: cfg: {
           name = cfg.user;
@@ -221,7 +245,7 @@ in
             "DATABASE ${cfg.database}" = "ALL PRIVILEGES";
           };
         })
-        cfg.servers;
+        django.servers;
     };
 
     services.nginx = {
@@ -229,7 +253,7 @@ in
         (_: cfg: if cfg.setupNginx
                  then lib.nameValuePair cfg.hostName cfg.nginxConfig
                  else lib.nameValuePair "" null)
-        cfg.servers;
+        django.servers;
     };
   };
 }
