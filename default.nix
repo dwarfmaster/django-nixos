@@ -13,7 +13,9 @@ let
     '';
   django-environment = cfg: {
     DJANGO_SETTINGS_MODULE = "${cfg.django.settings}";
-    ALLOWED_HOSTS = "${builtins.concatStringsSep "," cfg.allowedHosts}";
+    ALLOWED_HOSTS = if cfg.allowedHosts == []
+                    then "localhost"
+                    else "${builtins.concatStringsSep "," cfg.allowedHosts}";
     DB_NAME = "${cfg.database}";
     STATIC_ROOT = "${static-files cfg}";
   };
@@ -98,7 +100,7 @@ let
         allowedHosts = lib.mkOption {
           description = "List of allowed hosts";
           type = types.listOf types.str;
-          default = [ "localhost" ];
+          default = [ ];
         };
         unixSocket = {
           path = lib.mkOption {
@@ -153,6 +155,15 @@ let
             default = "${config.root}/manage.py";
           };
         };
+
+        # Security options
+        security = {
+          noNetwork = lib.mkOption {
+            description = "Isolate the application from the network";
+            type = types.bool;
+            default = false;
+          };
+        };
       };
 
       config = lib.mkMerge [
@@ -184,6 +195,9 @@ let
         (lib.mkIf (!(builtins.isNull config.django.settings)) {
           staticFiles = "${static-files config}";
           module = "${config.name}.wsgi";
+        })
+        (lib.mkIf (builtins.isNull config.unixSocket) {
+          allowedHosts = [ "localhost" ];
         })
       ];
     });
@@ -257,7 +271,6 @@ in
             ProtectKernelModules = lib.mkDefault true;
             ProtectKernelLogs = lib.mkDefault true;
             ProtectControlGroups = lib.mkDefault true;
-            RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" "AF_INET" "AF_INET6" ];
             RestrictNamespaces = lib.mkDefault true;
             LockPersonality = lib.mkDefault true;
             MemoryDenyWriteExecute = lib.mkDefault true;
@@ -270,12 +283,22 @@ in
             SystemCallArchitectures = lib.mkDefault "native";
             SystemCallFilter = lib.mkDefault [ "@system-service" "~@resources" ];
             SystemCallErrorNumber = lib.mkDefault "EPERM";
-          } // (if (lib.all (x: x == "localhost") cfg.allowedHosts)
+          }
+          // (if cfg.allowedHosts == [] && cfg.security.noNetwork
+              then {
+                # Prevents any networking
+                IPAddressDeny = lib.mkDefault "any";
+                RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" ];
+                PrivateNetwork = lib.mkDefault true;
+              } else (if lib.all (x: x == "localhost") cfg.allowedHosts && cfg.security.noNetwork
                 then {
                   # Allow only local connection if it is to only bind localhost
                   IPAddressAllow = lib.mkDefault "localhost";
                   IPAddressDeny = lib.mkDefault "any";
-                } else {})
+                  RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+                } else {
+                  RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+                }))
           // (if builtins.isNull cfg.django.settings then {}
               else {
                 ExecStartPre = ''
