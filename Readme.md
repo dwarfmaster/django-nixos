@@ -7,15 +7,16 @@ applications. By taking your source code and some parameters as input it will
 return a nixos configuration which serves your Django project.
 
 ## What you will get
-- A PostgreSQL DB with access configured for django
-- A secure systemd service which serves the project via gunicorn
+- A PostgreSQL DB with access configured for django.
+- A secure systemd service which serves the project via gunicorn.
 - A defined way of passing secrets to the application without leaking them into
-  /nix/store
-- Your static files served directly by NGinx
+  /nix/store.
+- Your static files served directly by NGinx.
 - Ability to configure some common options like (allowed-hosts, port, processes,
   threads) through your nix config.
-- Having your `manage.py` globally callable via `manage-projectname` (only via
-  root/sudo)
+- Having your `manage.py` globally callable via `manage-projectname`. The script
+  must be called with enough permissions to read the secret file.
+ 
 
 
 ## Usage
@@ -100,22 +101,17 @@ MIDDLEWARE += [ 'whitenoise.middleware.WhiteNoiseMiddleware' ]
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 ```
 
-(See `./examples/djangoproject/djangoproject/settings_nix.py` for full example)
-
 
 ## Secrets / Keys
 To pass secrets to django securely:
-1. Create a file containing your secrets as environment variables like this:
+1. Create a file containing your secrets as environment variables.
+     The syntax is the one of a systemd environment file, like this:
     ```
-    export SECRET_KEY="foo"
-    export ANOTHER_SECRET_FOR_DJANGO="bar"
+    SECRET_KEY="foo"
+    ANOTHER_SECRET_FOR_DJANGO="bar"
     ```
-2. Pass the path of the file via parameter `keys-file`  
-    This file will not be managed by nix.
-    If you are deploying to a remote host, make sure this file is available. An example on how to do this with NixOps can be found under `./examples/nixops`
-
-A systemd service running as root will later pick up that file and copy it to a
-destination under `/run/` where only the django system user can read it. Make
-sure by yourself to protect the source file you uploaded to the remote host
-with proper permissions or use the provided NixOps example.
+2. Pass the path of the file via parameter `keys-file`.
+    This file will not be managed by nix. If you are deploying to a remote host,
+    make sure this file is available. There is no specific permissions required
+    since the file is read directly by systemd.
 
