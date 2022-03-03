@@ -24,18 +24,18 @@ let
   load-django-env = cfg: make-export (django-environment cfg);
   load-django-keys = cfg: ''
     set -a
-    source /run/${cfg.user}/wsgi-secrets
+    source ${cfg.keysFile}
     set +a
   '';
   manage-script-content = cfg: ''
-    ${load-django-env cfg}
-    ${load-django-keys cfg}
     ${python}/bin/python ${cfg.django.manage} $@
   '';
   manage = cfg: pkgs.writeScript "manage-${cfg.name}-script" (manage-script-content cfg);
   manage-via-sudo = cfg:
     pkgs.writeScriptBin "manage-${cfg.name}" ''
-        sudo -u ${cfg.user} bash ${manage cfg} $@
+        ${load-django-env cfg}
+        ${load-django-keys cfg}
+        sudo -E -u ${cfg.user} ${manage cfg} $@
     '';
 
   inherit (lib) types;
@@ -100,7 +100,7 @@ let
         allowedHosts = lib.mkOption {
           description = "List of allowed hosts";
           type = types.listOf types.str;
-          default = [ ];
+          default = [ config.hostName ];
         };
         unixSocket = {
           path = lib.mkOption {
@@ -182,7 +182,6 @@ let
               extraConfig = ''
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
-                proxy_set_header Host $host;
                 proxy_redirect off;
                 client_max_body_size 4G;
               '';
@@ -195,9 +194,6 @@ let
         (lib.mkIf (!(builtins.isNull config.django.settings)) {
           staticFiles = "${static-files config}";
           module = "${config.name}.wsgi";
-        })
-        (lib.mkIf (builtins.isNull config.unixSocket) {
-          allowedHosts = [ "localhost" ];
         })
       ];
     });
@@ -284,18 +280,18 @@ in
             SystemCallFilter = lib.mkDefault [ "@system-service" "~@resources" ];
             SystemCallErrorNumber = lib.mkDefault "EPERM";
           }
-          // (if cfg.allowedHosts == [] && cfg.security.noNetwork
+          // (if builtins.isNull cfg.unixSocket && cfg.security.noNetwork
               then {
-                # Prevents any networking
+                # Allow only local connection if it is to only bind localhost
+                IPAddressAllow = lib.mkDefault "localhost";
                 IPAddressDeny = lib.mkDefault "any";
-                RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" ];
-                PrivateNetwork = lib.mkDefault true;
-              } else (if lib.all (x: x == "localhost") cfg.allowedHosts && cfg.security.noNetwork
+                RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+              } else (if cfg.security.noNetwork
                 then {
-                  # Allow only local connection if it is to only bind localhost
-                  IPAddressAllow = lib.mkDefault "localhost";
+                  # Prevents any networking
                   IPAddressDeny = lib.mkDefault "any";
-                  RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+                  RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" ];
+                  PrivateNetwork = lib.mkDefault true;
                 } else {
                   RestrictAddressFamilies = lib.mkDefault [ "AF_UNIX" "AF_INET" "AF_INET6" ];
                 }))
