@@ -11,23 +11,28 @@ let
       export STATIC_ROOT=$out/static
       ${python}/bin/python ${cfg.django.manage} collectstatic --settings ${cfg.django.settings}
     '';
-  load-django-env = cfg: ''
-    export DJANGO_SETTINGS_MODULE=${cfg.django.settings}
-    export ALLOWED_HOSTS=${builtins.concatStringsSep "," cfg.allowedHosts}
-    export DB_NAME=${cfg.database}
-    export STATIC_ROOT=${static-files cfg}
-  '';
+  django-environment = cfg: {
+    DJANGO_SETTINGS_MODULE = "${cfg.django.settings}";
+    ALLOWED_HOSTS = "${builtins.concatStringsSep "," cfg.allowedHosts}";
+    DB_NAME = "${cfg.database}";
+    STATIC_ROOT = "${static-files cfg}";
+  };
+  make-export = env:
+    builtins.concatStringsSep "\n" (lib.mapAttrsToList (name: val: "export ${name}=\"${val}\"") env);
+  load-django-env = cfg: make-export (django-environment cfg);
   load-django-keys = cfg: ''
+    set -a
     source /run/${cfg.user}/wsgi-secrets
+    set +a
   '';
   manage-script-content = cfg: ''
     ${load-django-env cfg}
     ${load-django-keys cfg}
     ${python}/bin/python ${cfg.django.manage} $@
   '';
-  manage = cfg: pkgs.writeScript "manage-${cfg.name}" (manage-script-content cfg);
+  manage = cfg: pkgs.writeScript "manage-${cfg.name}-script" (manage-script-content cfg);
   manage-via-sudo = cfg:
-    pkgs.writeScriptBin "manage-django-${cfg.name}" ''
+    pkgs.writeScriptBin "manage-${cfg.name}" ''
         sudo -u ${cfg.user} bash ${manage cfg} $@
     '';
 
@@ -46,7 +51,7 @@ let
           default = config.name;
         };
         keysFile = lib.mkOption {
-          description = "Path to a file containing secrets";
+          description = "Path to a file containing secrets as a systemd environment file";
           type = types.either types.nonEmptyStr types.path;
         };
         root = lib.mkOption {
@@ -95,6 +100,23 @@ let
           type = types.listOf types.str;
           default = [ "localhost" ];
         };
+        unixSocket = {
+          path = lib.mkOption {
+            description = "Path to unix socket to bind. If set ignores port and only bind this socket.";
+            type = types.nullOr types.str;
+            default = null;
+          };
+          user = lib.mkOption {
+            description = "User that should own the unix socket.";
+            type = types.str;
+            default = config.services.nginx.user;
+          };
+          group = lib.mkOption {
+            description = "Group that should own the unix socket.";
+            type = types.str;
+            default = config.services.nginx.group;
+          };
+        };
 
         # Read-only
         nginxHostConfig = lib.mkOption {
@@ -104,6 +126,11 @@ let
         };
         upstreamName = lib.mkOption {
           description = "Name of the nginx upstream entry";
+          type = types.str;
+          readOnly = true;
+        };
+        binding = lib.mkOption {
+          description = "The url of the bound socket, either unix:unixSocket.path or 0.0.0.0:port";
           type = types.str;
           readOnly = true;
         };
@@ -133,6 +160,9 @@ let
           # Config inspired by https://docs.gunicorn.org/en/latest/deploy.html
           # Check for static file, if not fuound proxy to app
           upstreamName = "${config.name}-upstream";
+          binding = if builtins.isNull config.unixSocket.path
+                    then "0.0.0.0:${toString config.port}"
+                    else "unix:${config.unixSocket.path}";
           nginxHostConfig = {
             root = "${config.staticFiles}";
             locations."/".tryFiles = "$uri @proxy_to_app";
@@ -148,7 +178,7 @@ let
             };
           };
           nginxUpstreamConfig = {
-            servers."0.0.0.0:${toString config.port}" = { };
+            servers."${config.binding}" = { };
           };
         }
         (lib.mkIf (!(builtins.isNull config.django.settings)) {
@@ -170,7 +200,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # manage.py of each django application can be called via manage-django-`projectname`
+    # manage.py of each django application can be called via manage-`projectname`
     environment.systemPackages =
       lib.mapAttrsToList (_: cfg: manage-via-sudo cfg)
         (lib.filterAttrs (_: cfg: !(builtins.isNull cfg.django.settings)) cfg.applications);
@@ -185,43 +215,28 @@ in
         (_: cfg: lib.nameValuePair cfg.user { })
         cfg.applications;
 
-    # The user of each server might not have permission to access the keys-file.
-    # Therefore we copy the keys-file to a place where the users has access
-    systemd.tmpfiles.rules = lib.flatten (lib.mapAttrsToList
-      (_: cfg: [
-        "d /run/${cfg.user} 1500 ${cfg.user} ${cfg.user} - -"
-        "e /run/${cfg.user} 1500 ${cfg.user} ${cfg.user} - -"
-        "C /run/${cfg.user}/wsgi-secrets 0400 ${cfg.user} ${cfg.user} - ${cfg.keysFile}"
-      ])
-      cfg.applications
-    );
-
     systemd.services =
       (lib.mapAttrs'
         (_: cfg: let
           capabilities = if cfg.port <= 1024 then [ "CAP_NET_BIND_SERVICE" ] else [ "" ];
         in lib.nameValuePair "wsgi-${cfg.name}" {
           description = "${cfg.name} wsgi application";
-          wantedBy = [ "multi-user.target" ];
           wants = [ "postgresql.service" ];
           after = [ "network.target" "postgresql.service" ];
-          script = (if builtins.isNull cfg.django.settings then "" else ''
-            ${load-django-env cfg}
-            ${load-django-keys cfg}
-          '') + ''
-            ${python}/bin/python ${cfg.django.manage} migrate
-            ${python}/bin/gunicorn ${cfg.module} \
-                --pythonpath ${cfg.root} \
-                -b 0.0.0.0:${toString cfg.port} \
-                --workers=${toString cfg.processes} \
-                --threads=${toString cfg.threads}
-          '';
-          # This is inspired by the NGinx service file
+          environment = if builtins.isNull cfg.django.settings then {} else django-environment cfg;
           serviceConfig = {
+            ExecStart = ''
+                ${python}/bin/gunicorn ${cfg.module} \
+                    --pythonpath ${cfg.root} \
+                    --workers=${toString cfg.processes} \
+                    --threads=${toString cfg.threads}
+              '';
             LimitNOFILE = "99999";
             LimitNPROC = "99999";
+            EnvironmentFile = "${cfg.keysFile}";
             User = cfg.user;
             Group = cfg.user;
+            # The following is inspired by the NGinx service file
             # Security
             ProtectProc = lib.mkDefault "invisible";
             ProcSubset = lib.mkDefault "pid";
@@ -250,7 +265,6 @@ in
             RestrictSUIDSGID = lib.mkDefault true;
             RemoveIPC = lib.mkDefault true;
             PrivateMounts = lib.mkDefault true;
-            ReadWritePaths = lib.mkDefault [ "/run/${cfg.user}" ];
             ReadOnlyPaths = lib.mkDefault [ "${cfg.root}" ];
             # System Call architecture
             SystemCallArchitectures = lib.mkDefault "native";
@@ -261,7 +275,27 @@ in
                   # Allow only local connection if it is to only bind localhost
                   IPAddressAllow = lib.mkDefault "localhost";
                   IPAddressDeny = lib.mkDefault "any";
-                } else {});
+                } else {})
+          // (if builtins.isNull cfg.django.settings then {}
+              else {
+                ExecStartPre = ''
+                    ${python}/bin/python ${cfg.django.manage} migrate
+                  '';
+              });
+        }) cfg.applications);
+    systemd.sockets =
+      (lib.mapAttrs'
+        (_: cfg: let
+        in lib.nameValuePair "wsgi-${cfg.name}" {
+          listenStreams = if builtins.isNull cfg.unixSocket.path
+                          then [ "0.0.0.0:${toString cfg.port}" ]
+                          else [ "${cfg.unixSocket.path}" ];
+          wantedBy = [ "multi-user.target" ];
+          socketConfig = {
+            SocketUser = config.services.nginx.user;
+            SocketGroup = config.services.nginx.group;
+            SocketMode = "0600";
+          };
         }) cfg.applications);
 
     services.postgresql = {

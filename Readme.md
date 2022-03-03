@@ -14,8 +14,8 @@ return a nixos configuration which serves your Django project.
 - Your static files served directly by NGinx
 - Ability to configure some common options like (allowed-hosts, port, processes,
   threads) through your nix config.
-- Having your `manage.py` globally callable via `manage-django-projectname`
-  (only via root/sudo)
+- Having your `manage.py` globally callable via `manage-projectname` (only via
+  root/sudo)
 
 
 ## Usage
