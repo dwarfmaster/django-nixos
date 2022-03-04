@@ -7,7 +7,7 @@ let
   static-files = cfg: pkgs.runCommand
     "${cfg.name}-static" {} ''
       mkdir -p $out/static
-      export SECRET_KEY="no-secret" # Secret keys must be set bust is not used for collectstatic
+      export SECRET_KEY="no-secret" # Secret keys must be set but is not used for collectstatic
       export STATIC_ROOT=$out/static
       ${python}/bin/python ${cfg.django.manage} collectstatic --settings ${cfg.django.settings}
     '';
