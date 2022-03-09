@@ -31,7 +31,7 @@ Once imported, the management of django application is done the following way:
   wsgi.applications = {
     project1 = { ... };
     project2 = { ... };
-  }
+  };
 }
 ```
 
