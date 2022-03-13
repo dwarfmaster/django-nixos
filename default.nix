@@ -277,7 +277,7 @@ in
             ReadOnlyPaths = lib.mkDefault [ "${cfg.root}" ];
             # System Call architecture
             SystemCallArchitectures = lib.mkDefault "native";
-            SystemCallFilter = lib.mkDefault [ "@system-service" "~@resources" ];
+            SystemCallFilter = lib.mkDefault [ "@system-service" "~@resources" "~@privileged" ];
             SystemCallErrorNumber = lib.mkDefault "EPERM";
           }
           // (if builtins.isNull cfg.unixSocket && cfg.security.noNetwork

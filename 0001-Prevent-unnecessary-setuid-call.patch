@@ -1,0 +1,25 @@
+From cc3238c6ff5887919fdc9524f690275681970021 Mon Sep 17 00:00:00 2001
+From: DwarfMaster <luc@dwarfmaster.net>
+Date: Sun, 13 Mar 2022 17:16:32 +0100
+Subject: [PATCH] Prevent unnecessary setuid call
+
+---
+ gunicorn/util.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/gunicorn/util.py b/gunicorn/util.py
+index fb844c18..c2681154 100644
+--- a/gunicorn/util.py
++++ b/gunicorn/util.py
+@@ -145,7 +145,7 @@ def set_owner_process(uid, gid, initgroups=False):
+         elif gid != os.getgid():
+             os.setgid(gid)
+ 
+-    if uid:
++    if uid and uid != os.getuid():
+         os.setuid(uid)
+ 
+ 
+-- 
+2.33.1
+
